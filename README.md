@@ -55,6 +55,18 @@ Required GitHub repository secrets:
 
 The workflow runs on a schedule and uses `getUpdates` with saved offset tracking. It downloads new audio files, converts them to MP3 with FFmpeg when needed, updates `audio/manifest.json`, and commits the result back to the repository.
 
+Duplicate protection is three-layered:
+
+1. Telegram `file_unique_id` is remembered in `.telegram-sync-state.json` and rejected on sight.
+2. Every file's SHA-256 is compared against `audio/manifest.json`, so re-sent bytes are rejected even with a new Telegram id.
+3. Track ids and file names are made unique (slug plus content hash), so two imports in the same second never overwrite each other.
+
+Notes for the automation:
+
+- The Telegram bot must be able to read group messages: disable privacy mode (`/setprivacy` in BotFather) or promote the bot to admin in the group.
+- The Bot API only returns messages sent *after* the first successful poll; older messages cannot be imported.
+- State is committed together with the audio, so the daily runs keep their offset and dedup history across runs.
+
 ## Notes
 
 - The app works without any backend or build step.
