@@ -1,4 +1,75 @@
 {
   "_readme": "Add music entries here. Each object must include id, file, title, artist, album. Optional: year, genre, duration, cover.",
-  "tracks": []
+  "tracks": [
+    {
+      "id": "untitled-track",
+      "file": "audio/untitled-track-1791401792-e30c7098.mp3",
+      "title": "#آهنگ_چنل #خارجی #ویژه #سیستم",
+      "artist": "❖MĪAßo.MUSłC❖",
+      "album": "Imported",
+      "year": 2026,
+      "duration": "02:27",
+      "cover": "",
+      "sha256": "e30c70980449b6a7caa5752615d14443b332e64bb98efc30f636319cc17fc548",
+      "telegram_file_unique_id": "AgADciUAAtgOCVI",
+      "source": "audio",
+      "imported_at": "2026-10-07T19:36:35Z"
+    },
+    {
+      "id": "phonk-remix",
+      "file": "audio/phonk-remix-1791401795-d883c2f6.mp3",
+      "title": "#آهنگ_پست #خارجی #ویژه #سیستم #phonk #remix",
+      "artist": "❖MĪAßo.MUSłC❖",
+      "album": "Imported",
+      "year": 2026,
+      "duration": "02:41",
+      "cover": "",
+      "sha256": "d883c2f6cd8cdd9beb29514d1ac0e16f5f32f50f28faaaa6d0cfd8bb44a639f2",
+      "telegram_file_unique_id": "AgADWSIAAjFr6FE",
+      "source": "audio",
+      "imported_at": "2026-10-07T19:36:37Z"
+    },
+    {
+      "id": "remix",
+      "file": "audio/remix-1791401797-f5ec5c15.mp3",
+      "title": "#آهنگ_چنل #ایرانی #ویژه #رپ #remix",
+      "artist": "❖MĪAßo.MUSłC❖",
+      "album": "Imported",
+      "year": 2026,
+      "duration": "02:39",
+      "cover": "",
+      "sha256": "f5ec5c1564923c9660cc24d086e3799b75ea67fc9c592da03611780acbcfd1ed",
+      "telegram_file_unique_id": "AgAD3CMAAjFr6FE",
+      "source": "audio",
+      "imported_at": "2026-10-07T19:36:40Z"
+    },
+    {
+      "id": "remix-5c4231",
+      "file": "audio/remix-1791401800-5c4231f7.mp3",
+      "title": "#آهنگ_چنل #خارجی #ویژه #رپ #remix",
+      "artist": "❖MĪAßo.MUSłC❖",
+      "album": "Imported",
+      "year": 2026,
+      "duration": "08:10",
+      "cover": "",
+      "sha256": "5c4231f75c6be2616de7f854fdc342605616fc5bd701233596b3dd074d49df62",
+      "telegram_file_unique_id": "AgADKiMAAjFr8FE",
+      "source": "audio",
+      "imported_at": "2026-10-07T19:36:44Z"
+    },
+    {
+      "id": "remix-d6e7a8",
+      "file": "audio/remix-1791401804-d6e7a816.mp3",
+      "title": "#آهنگ_چنل #ایرانی #ویژه #رپ #remix",
+      "artist": "❖MĪAßo.MUSłC❖",
+      "album": "Imported",
+      "year": 2026,
+      "duration": "03:36",
+      "cover": "",
+      "sha256": "d6e7a8168d36b8a23cd29fd2f7c02e5ded8069bf3dc331d67be5099a6c2a438b",
+      "telegram_file_unique_id": "AgAD7SYAAjFr-FE",
+      "source": "audio",
+      "imported_at": "2026-10-07T19:36:47Z"
+    }
+  ]
 }
