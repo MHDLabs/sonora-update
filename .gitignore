@@ -5,5 +5,4 @@ __pycache__/
 .venv/
 venv/
 .env
-.telegram-offset
 .DS_Store
