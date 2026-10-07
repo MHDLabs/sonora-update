@@ -1,124 +1,62 @@
 # SONORA
 
-> **Listen deeper.** A fully static, dark-themed music web app — gold accent, serif/mono/sans
-> typography, working audio playback, radio, sessions, library, stats, and a professional
-> 10-band equalizer. Every artist, album and story is fictional demo data.
+SONORA is a static music player designed for GitHub Pages. It is intentionally minimal, production-ready, and optimized for a dark neon aesthetic.
 
-No build step, no framework, no server-side code. Plain HTML + CSS + ES5-ish JavaScript.
+## What changed
 
----
+- Simplified the site to a clean, production-ready listening experience.
+- Removed non-player sections and extra noise from the interface.
+- Kept the design focused on a Spotify-style library and player flow.
+- Music is stored in the repository under `audio/` and can be added automatically through `audio/manifest.json`.
+- A Telegram-based sync workflow can poll a Telegram group and add new tracks to the repo automatically.
 
 ## Run locally
 
-Any static file server works (files are referenced with **relative paths** only):
-
 ```bash
-# Python
-python -m http.server 8080
-# → open http://localhost:8080
-
-# or Node
-npx serve .
+python3 -m http.server 8080
 ```
 
-> Opening `index.html` directly via `file://` works for the UI, but `audio/manifest.json`
-> and some audio files may be blocked by the browser — use a local server.
+Then open:
 
-## Deploy to GitHub Pages
+```text
+http://localhost:8080
+```
 
-1. Push this repository to GitHub.
-2. **Settings → Pages → Build and deployment**
-3. Source: **Deploy from a branch**
-4. Branch: **`main` / `/ (root)`** → **Save**
-5. The site appears at `https://<user>.<repo>.github.io/<repo>/` within a minute.
+## Add music
 
-Notes:
-- An empty `.nojekyll` file is included so GitHub skips Jekyll processing
-  (keeps files/directories starting with `_` and everything under `/audio` untouched).
-- A ready-made workflow also exists at `.github/workflows/static.yml` — if you use it,
-  switch Pages source to **GitHub Actions** instead of “Deploy from a branch”.
-- Deep links are not routed (client-side `S.page` + `S.param` only) — unknown URLs boot to home.
+1. Place an MP3 inside `audio/`.
+2. Add one entry to `audio/manifest.json`.
+3. Commit and push.
 
----
-
-## How to add music
-
-Three steps, no code editing:
-
-1. **Drop an `.mp3` into `/audio/`**
-2. **Add ONE entry to `audio/manifest.json`:**
+Example manifest item:
 
 ```json
 {
-  "id": "my-song-01",
-  "file": "audio/my-song-01.mp3",
-  "title": "My Song",
-  "artist": "My Artist",
-  "album": "My Album",
+  "id": "night-shift",
+  "file": "audio/night-shift.mp3",
+  "title": "Night Shift",
+  "artist": "Aster Vale",
+  "album": "Afterglow",
   "year": 2026,
   "genre": "Electronic",
-  "duration": "4:12",
-  "cover": "audio/covers/my-song-01.jpg"
+  "duration": "03:42",
+  "cover": ""
 }
 ```
 
-3. **Commit + push** — the app merges the manifest with the built-in demo data,
-   auto-creating artist/album entries when needed.
+## Telegram sync automation
 
-- Required: `id`, `file`, `title`, `artist`, `album`.
-- Optional: `year`, `genre`, `duration`, `cover`.
-- If `cover` is omitted (or the image 404s), **ID3 tags embedded in the mp3 are read
-  automatically** — title, artist, album *and* embedded cover art (`js/id3.js`, dependency-free,
-  ID3v2.3 / ID3v2.4). The results are cached in `localStorage`.
-- If `audio/manifest.json` is missing entirely, the app silently uses only the built-in demo data.
-- Bundled demo audio: `audio/track1.mp3` … `track8.mp3` (SoundHelix, soundhelix.com) is used as
-  the playback fallback for any track file that doesn’t exist.
+The repo includes a GitHub Actions workflow and helper script for polling a Telegram group and importing new audio files.
 
-Demo data itself (artists, albums, playlists, stories, events, stations…) lives in **`js/data.js`**
-— edit music data there; **`js/app.js`** contains only logic.
+Required GitHub repository secrets:
 
-## Equalizer
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
 
-Open the full player (click the track bar or press `F`) → **EQ** button in the top bar (or press
-`E`). 10 bands (31 Hz – 16 kHz, ±15 dB), preamp, 13 presets, custom presets, live response curve,
-ENABLE/BYPASS. Changes persist in `sonora-state-v2`.
+The workflow runs on a schedule and uses `getUpdates` with saved offset tracking. It downloads new audio files, converts them to MP3 with FFmpeg when needed, updates `audio/manifest.json`, and commits the result back to the repository.
 
-## Keyboard shortcuts
+## Notes
 
-`Space` play/pause · `←/→` seek ±10s (Shift = ±30s) · `↑/↓` volume · `M` mute · `N/P` next/prev ·
-`L` like · `S` shuffle · `R` repeat · `F` full player · **`E` EQ panel · `Shift+E` EQ bypass** ·
-`0–9` jump to % · `⌘/Ctrl+K` search · `?` help · `Esc` close
-
-## Persistence & reset
-
-Everything (likes, follows, saved albums/playlists, history, recents, player position, volume,
-shuffle/repeat, EQ, last tabs) lives under the single `localStorage` key **`sonora-state-v2`**.
-Old `sonora-state` / `sonora-vol` keys are migrated automatically, then deleted.
-Use **Reset app** in the footer to clear it (`window.clearState()`).
-
-## Browser support
-
-- **Web Audio (EQ + live waveform)** — Chrome/Edge 66+, Firefox 75+, Safari 14.1+.
-  `AudioContext` is created on the first user gesture; before that, playback and the
-  visualizer fall back to the plain `<audio>` element and a decorative sine wave.
-- **ID3v2 tag reading** — all evergreen browsers (pure JS, streams only the tag bytes).
-- **Manifest fetch** — browsers with `fetch` (all evergreen). Missing manifest = graceful no-op.
-- Older browsers: everything degrades — playback still works via the `<audio>` element.
-
-## Structure
-
-```
-index.html            single page, <base href="./"> for GitHub Pages
-css/styles.css        theme, layout, components
-css/fixes.css         fixes/additions (no new rules required by EQ)
-css/eq.css            equalizer panel only
-js/data.js            ALL music/editorial data + SONORA_DATA export
-js/eq.js              Web Audio EQ engine + panel UI  (window.EQ)
-js/id3.js             dependency-free ID3v2 reader     (window.ID3)
-js/app.js             app logic, state, routing, persistence
-audio/manifest.json   drop-in music manifest
-audio/*.mp3           fallback demo audio
-.nojekyll             skip Jekyll on GitHub Pages
-```
-
-All artists, releases, events and data in SONORA are invented for demo purposes.
+- The app works without any backend or build step.
+- The theme uses a neon cyan and purple palette on a deep dark background.
+- Compression guidance: MP3 VBR `-q:a 2` is the default operational target for low-size, near-transparent quality.
