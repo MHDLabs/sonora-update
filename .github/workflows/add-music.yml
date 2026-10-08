@@ -1,0 +1,54 @@
+# Keep audio/manifest.json in sync with whatever lands in /audio/.
+# push audio files (web UI, git, add_music.py changes) → this workflow
+# rebuilds the manifest + extracted covers and commits them back.
+name: Rebuild music manifest
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "audio/**"
+      - ".github/scripts/add_music.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: add-music
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Ensure ffprobe is available
+        run: command -v ffprobe >/dev/null || (sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg)
+
+      # add_music.py is stdlib-only: no pip install, no network, no interactivity.
+      # --check exits 1 on drift, so log it as a status line instead of a failure.
+      - name: Report drift
+        run: python .github/scripts/add_music.py --check || true
+
+      - name: Rebuild manifest and covers
+        run: python .github/scripts/add_music.py
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A audio
+          if git diff --cached --quiet; then
+            echo "Manifest already up to date — nothing to commit."
+          else
+            git commit -m "chore(music): regenerate audio manifest"
+            git push
+          fi

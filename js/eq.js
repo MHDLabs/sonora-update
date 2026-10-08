@@ -34,10 +34,10 @@ var PRESETS={
  'Night':[-6,-4,-2,0,1,2,2,1,0,-2]
 };
 var state={enabled:true,preset:'Flat',bands:[0,0,0,0,0,0,0,0,0,0],preamp:0};
-var custom={};                       /* user presets — sonora-eq-presets */
+var custom={};
 var ctx=null,src=null,filters=[],preNode=null,analyserNode=null;
-var audioEl=null,ready=false,open=false,host=null,status='';
-var onChange=null;                   /* app.js sets this → saveState() */
+var audioEl=null,ready=false,open=false,host=null;
+var onChange=null;
 
 function clamp(v,a,b){return v<a?a:(v>b?b:v);}
 function db2g(db){return Math.pow(10,db/20);}
@@ -46,15 +46,15 @@ function saveCustom(){try{localStorage.setItem('sonora-eq-presets',JSON.stringif
 function notify(){try{if(typeof onChange==='function')onChange();}catch(e){}}
 loadCustom();
 
-/* ---------- audio graph ---------- */
 function init(el){
   if(ready||!el)return;
   audioEl=el;
   var AC=window.AudioContext||window.webkitAudioContext;
-  if(!AC){status='Equalizer is not supported by this browser.';refreshStatus();return;}
+  if(!AC)return;
   try{
     ctx=new AC();
-    src=ctx.createMediaElementSource(el);
+    try{src=ctx.createMediaElementSource(el);}catch(e){src=null;}
+    if(!src){ctx=null;return;}
     var node=src;
     for(var i=0;i<FREQS.length;i++){
       var f=ctx.createBiquadFilter();
@@ -75,30 +75,9 @@ function init(el){
     preNode.connect(analyserNode);
     analyserNode.connect(ctx.destination);
     ready=true;
-    status='';
-    resume();
+    if(ctx.state==='suspended'&&ctx.resume)ctx.resume().catch(function(){});
     applyNodes();
-  }catch(e){
-    ready=false;
-    status='Equalizer unavailable; audio will continue without EQ.';
-    if(src){
-      try{src.disconnect();}catch(ignore){}
-      try{src.connect(ctx.destination);}catch(ignore){}
-    }
-    refreshStatus();
-  }
-}
-function resume(){
-  if(ctx&&ctx.state==='suspended'&&ctx.resume){
-    try{return ctx.resume().catch(function(){status='Tap play to enable audio processing.';refreshStatus();});}
-    catch(e){status='Tap play to enable audio processing.';refreshStatus();}
-  }
-  return Promise.resolve();
-}
-function refreshStatus(){
-  if(!host)return;
-  var el=host.querySelector('.eq-status');
-  if(el){el.textContent=status;el.hidden=!status;}
+  }catch(e){ready=false;}
 }
 function applyNodes(){
   if(!ready)return;
@@ -108,7 +87,6 @@ function applyNodes(){
   }
   try{preNode.gain.setTargetAtTime(on?db2g(state.preamp):1,t,0.02);}catch(e){preNode.gain.value=on?db2g(state.preamp):1;}
 }
-/* ---------- control API ---------- */
 function arrEq(a){
   if(!a||a.length!==10)return false;
   for(var i=0;i<10;i++)if(Math.abs(a[i]-state.bands[i])>0.001)return false;
@@ -123,25 +101,21 @@ function matchPreset(){
 function setBand(i,gainDb){
   if(i<0||i>9)return;
   state.bands[i]=clamp((+gainDb)||0,MIN_DB,MAX_DB);
-  state.enabled=true;
   state.preset=matchPreset();
   applyNodes();refreshUI();notify();
 }
 function setPreamp(db){
   state.preamp=clamp((+db)||0,PRE_MIN,PRE_MAX);
-  state.enabled=true;
   state.preset=matchPreset();
   applyNodes();refreshUI();notify();
 }
 function setPreset(name){
   var p=PRESETS[name]||custom[name];
   if(!p)return;
-  /* built-ins are plain arrays; user presets are {bands,preamp} */
   var bands=Object.prototype.toString.call(p)==='[object Array]'?p:p.bands;
   if(!bands||bands.length!==10)return;
   for(var i=0;i<10;i++)state.bands[i]=clamp((+bands[i])||0,MIN_DB,MAX_DB);
   state.preamp=clamp(p.bands?(+p.preamp||0):0,PRE_MIN,PRE_MAX);
-  state.enabled=true;
   state.preset=name;
   applyNodes();refreshUI();notify();
 }
@@ -171,9 +145,7 @@ function restore(o){
   applyNodes();
   if(open&&host)host.innerHTML=panelHTML();
 }
-/* ---------- response curve preview ---------- */
 function peakDbAt(gainDb,f0,Q,f,fs){
-  /* RBJ peaking biquad magnitude response at frequency f, in dB */
   var A=Math.pow(10,gainDb/40);
   var w0=2*Math.PI*f0/fs,alpha=Math.sin(w0)/(2*Q);
   var b0=1+alpha*A,b1=-2*Math.cos(w0),b2=1-alpha*A;
@@ -191,7 +163,7 @@ function curvePoints(){
   var bands=state.enabled?state.bands:[0,0,0,0,0,0,0,0,0,0];
   var pre=state.enabled?state.preamp:0;
   for(i=0;i<=N;i++){
-    var f=20*Math.pow(1000,i/N); /* 20 Hz … 20 kHz, log scale */
+    var f=20*Math.pow(1000,i/N);
     var db=pre;
     for(b=0;b<10;b++)if(bands[b])db+=peakDbAt(bands[b],FREQS[b],1.0,f,44100);
     var x=(i/N*W).toFixed(1);
@@ -200,14 +172,16 @@ function curvePoints(){
   }
   return pts.join(' ');
 }
-/* ---------- panel UI ---------- */
-function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
+function esc(s){return String(s==null?'':s).replace(/&/g,'&').replace(/</g,'<').replace(/"/g,'"');}
 function fmtDb(v){v=Math.round(v*10)/10;return (v>0?'+':'')+v;}
 function panelHTML(){
   var h='',i,k,c,on;
-  h+='<div class="eq-head"><span class="eq-title">EQUALIZER<span class="eq-sub">10-BAND GRAPHIC</span></span>';
-  h+='<button type="button" class="eq-power'+(state.enabled?' on':'')+'" data-eq="enabled" aria-pressed="'+(state.enabled?'true':'false')+'" aria-label="Enable or bypass the equalizer">'+(state.enabled?'ENABLED':'BYPASS')+'</button></div>';
-  h+='<p class="eq-status"'+(status?'':' hidden')+'>'+esc(status)+'</p>';
+  h+='<div class="eq-head">';
+  h+='<span class="eq-title">EQUALIZER<span class="eq-sub">10-BAND GRAPHIC</span></span>';
+  h+='<span class="sp"></span>';
+  h+='<button type="button" class="eq-power'+(state.enabled?' on':'')+'" data-eq="enabled" aria-pressed="'+(state.enabled?'true':'false')+'" aria-label="Enable or bypass the equalizer">'+(state.enabled?'ENABLED':'BYPASS')+'</button>';
+  h+='<button type="button" class="eq-close" data-eq="close" aria-label="Close equalizer" title="Close (Esc)">×</button>';
+  h+='</div>';
   h+='<div class="eq-chips" role="group" aria-label="EQ presets">';
   var names=[];
   for(k in PRESETS)names.push(k);
@@ -224,7 +198,7 @@ function panelHTML(){
   h+='<div class="eq-rack">';
   for(i=0;i<10;i++){
     h+='<div class="eq-band"><span class="eq-db'+(Math.abs(state.bands[i])>=2?' hot':'')+'" data-eq-db="'+i+'">'+fmtDb(state.bands[i])+'</span>';
-    h+='<input type="range" class="eq-slider" min="-15" max="15" step="0.5" value="'+state.bands[i]+'" orient="vertical" aria-label="'+FLBL[i]+' hertz gain in decibels" data-eq-band="'+i+'">';
+    h+='<div class="eq-slider-wrap"><input type="range" class="eq-slider" min="-15" max="15" step="0.5" value="'+state.bands[i]+'" aria-label="'+FLBL[i]+' hertz gain in decibels" data-eq-band="'+i+'"></div>';
     h+='<span class="eq-fq">'+FLBL[i]+'</span></div>';
   }
   h+='</div>';
@@ -260,9 +234,7 @@ function refreshUI(){
     pw.setAttribute('aria-pressed',state.enabled?'true':'false');
   }
   host.classList.toggle('eq-off',!state.enabled);
-  refreshStatus();
 }
-/* ---------- mount / open / events ---------- */
 function applyOpen(){
   if(!host)return;
   if(open){
@@ -275,7 +247,7 @@ function applyOpen(){
   var eb=document.getElementById('eqBtn');
   if(eb){
     eb.setAttribute('aria-pressed',open?'true':'false');
-    eb.style.color=open?'var(--acc)':'';
+    eb.style.color=open?'#D9A441':'';
   }
 }
 function mount(container){
@@ -284,6 +256,9 @@ function mount(container){
   applyOpen();
 }
 function toggle(){
+  var player=document.getElementById('player');
+  var needOpen=player&&!player.classList.contains('open');
+  if(needOpen&&window.openPlayer){try{openPlayer();}catch(e){}}
   var panel=document.getElementById('eqPanel')||host;
   if(!panel)return;
   host=panel;
@@ -311,8 +286,8 @@ document.addEventListener('click',function(e){
   else if(a==='enabled')setEnabled(!state.enabled);
   else if(a==='reset'){setPreset('Flat');setEnabled(true);}
   else if(a==='save')saveAsPreset();
+  else if(a==='close')close();
 },false);
-/* ---------- public API ---------- */
 window.EQ={
   init:init,
   setBand:setBand,
@@ -328,8 +303,6 @@ window.EQ={
   toggle:toggle,
   close:close,
   isOpen:function(){return open;},
-  resume:resume,
-  get status(){return status;},
   get enabled(){return state.enabled;},
   set enabled(v){setEnabled(!!v);},
   get analyser(){return analyserNode;},
