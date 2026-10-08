@@ -5,12 +5,12 @@ into the repository.
 Pipeline per update:
   1. Parse message, pick audio/voice/video_note/audio-document.
   2. Deduplicate by file_unique_id and content sha256.
-  3. Download raw file from Telegram (with retry).
-  4. Send ALL textual signals + caption to OpenRouter (Gemma) for cleaning.
-     - If the model fails after N retries -> reply to the source message
-       with an English error and DO NOT save the file.
-  5. Convert non-MP3 to MP3 using a bundled ffmpeg binary (imageio-ffmpeg),
-     so no system package is required.
+  3. Download raw file from Telegram.
+  4. Send ALL textual signals + caption to Groq (gpt-oss-20b) for cleaning.
+     - Single attempt, no retries.
+     - On failure -> reply to the source message with an English error and
+       DO NOT save the file.
+  5. Convert non-MP3 to MP3 using a bundled ffmpeg binary (imageio-ffmpeg).
   6. Read duration from Telegram metadata first, else from mutagen.
   7. Append a track to audio/manifest.json (schema preserved exactly).
   8. Reply to the source message in English confirming the import.
@@ -36,10 +36,10 @@ STATE_PATH = ROOT / '.telegram-sync-state.json'
 
 BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
 CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
-OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY', '').strip()
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '').strip()
 
-OPENROUTER_BASE = 'https://openrouter.ai/api/v1'
-OPENROUTER_MODEL = 'google/gemma-4-26b-a4b-it:free'
+GROQ_BASE = 'https://api.groq.com/openai/v1'
+GROQ_TEXT_MODEL = 'openai/gpt-oss-20b'
 
 API = f'https://api.telegram.org/bot{BOT_TOKEN}' if BOT_TOKEN else ''
 
@@ -48,10 +48,8 @@ REQUEST_TIMEOUT = 90
 GETUPDATES_TIMEOUT = 25
 AUDIO_EXTENSIONS = {'.mp3', '.m4a', '.aac', '.ogg', '.oga', '.opus', '.flac', '.wav', '.wma'}
 
-AI_TIMEOUT = 120
-AI_MAX_RETRIES = 5
-AI_BACKOFF_BASE = 2
-AI_BACKOFF_CAP = 60
+AI_TIMEOUT = 60
+RATE_LIMIT_DELAY = 2.5  # seconds between Groq calls; keeps us well under 30 RPM
 
 MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024  # Telegram Bot API hard limit
 
@@ -231,33 +229,20 @@ def unique_track_id(base, taken, digest):
 
 # ----------------------------------------------------------------- telegram
 
-def api_request(method, params=None, timeout=REQUEST_TIMEOUT, retries=3):
-    last_exc = None
-    for attempt in range(1, retries + 1):
-        try:
-            resp = requests.get(f'{API}/{method}', params=params or {}, timeout=timeout)
-            try:
-                payload = resp.json()
-            except ValueError:
-                raise RuntimeError(
-                    f'Telegram API {method} returned non-JSON (HTTP {resp.status_code})'
-                )
-            if not payload.get('ok'):
-                raise RuntimeError(
-                    f'Telegram API {method} failed (HTTP {resp.status_code}): '
-                    f'{payload.get("description")}'
-                )
-            return payload
-        except (requests.Timeout, requests.ConnectionError) as exc:
-            last_exc = exc
-            if attempt < retries:
-                sleep_for = min(AI_BACKOFF_BASE ** attempt, 10)
-                log(f'Telegram {method} network error (attempt {attempt}/{retries}): {exc}; retrying in {sleep_for}s')
-                time.sleep(sleep_for)
-                continue
-            raise
-    if last_exc:
-        raise last_exc
+def api_request(method, params=None, timeout=REQUEST_TIMEOUT):
+    resp = requests.get(f'{API}/{method}', params=params or {}, timeout=timeout)
+    try:
+        payload = resp.json()
+    except ValueError:
+        raise RuntimeError(
+            f'Telegram API {method} returned non-JSON (HTTP {resp.status_code})'
+        )
+    if not payload.get('ok'):
+        raise RuntimeError(
+            f'Telegram API {method} failed (HTTP {resp.status_code}): '
+            f'{payload.get("description")}'
+        )
+    return payload
 
 
 def delete_webhook():
@@ -296,28 +281,13 @@ def get_file_url(file_id):
     return f'https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}'
 
 
-def download_file(file_path, url, retries=3):
-    last_exc = None
-    for attempt in range(1, retries + 1):
-        try:
-            with requests.get(url, timeout=REQUEST_TIMEOUT, stream=True) as resp:
-                resp.raise_for_status()
-                with open(file_path, 'wb') as fh:
-                    for chunk in resp.iter_content(chunk_size=1024 * 256):
-                        if chunk:
-                            fh.write(chunk)
-            return
-        except (requests.Timeout, requests.ConnectionError) as exc:
-            last_exc = exc
-            Path(file_path).unlink(missing_ok=True)
-            if attempt < retries:
-                sleep_for = min(AI_BACKOFF_BASE ** attempt, 15)
-                log(f'Download error (attempt {attempt}/{retries}): {exc}; retrying in {sleep_for}s')
-                time.sleep(sleep_for)
-                continue
-            raise
-    if last_exc:
-        raise last_exc
+def download_file(file_path, url):
+    with requests.get(url, timeout=REQUEST_TIMEOUT, stream=True) as resp:
+        resp.raise_for_status()
+        with open(file_path, 'wb') as fh:
+            for chunk in resp.iter_content(chunk_size=1024 * 256):
+                if chunk:
+                    fh.write(chunk)
 
 
 def send_reply(chat_id, message_id, text):
@@ -352,11 +322,20 @@ def reply_success(chat_id, message_id, track):
     send_reply(chat_id, message_id, text)
 
 
-def reply_failure(chat_id, message_id, reason):
+def reply_failure(chat_id, message_id, error):
+    if isinstance(error, AIError):
+        reason = AI_ERROR_LABELS.get(error.category, error.category)
+        detail = error.detail
+    else:
+        reason = type(error).__name__
+        detail = str(error)
+
     text = (
         '❌ Metadata extraction failed\n\n'
-        'The song was not added to the library.\n'
-        f'Reason: {str(reason)[:400]}'
+        'The song was not added to the library.\n\n'
+        f'Reason: {reason}\n'
+        f'Details: {str(detail)[:300]}\n\n'
+        'You can resend the file later.'
     )
     send_reply(chat_id, message_id, text)
 
@@ -411,6 +390,26 @@ def telegram_duration(audio):
 
 # ---------------------------------------------------------------------- AI
 
+class AIError(Exception):
+    def __init__(self, category, detail):
+        super().__init__(detail)
+        self.category = category
+        self.detail = str(detail)
+
+
+AI_ERROR_LABELS = {
+    'auth':       'Authentication with AI provider failed',
+    'rate_limit': 'AI provider rate limit exceeded',
+    'server':     'AI provider server error',
+    'request':    'AI provider rejected the request',
+    'timeout':    'AI request timed out',
+    'network':    'Network error while contacting AI provider',
+    'parse':      'AI returned an invalid response',
+    'empty':      'AI returned an empty response',
+    'unknown':    'Unexpected AI error',
+}
+
+
 AI_SYSTEM_PROMPT = """You are a music metadata extractor. You will receive raw signals extracted from a Telegram audio message (tags, file name, caption, chat context, etc.). Your job is to produce clean, accurate music metadata.
 
 Return ONLY a single valid JSON object. No markdown fences, no prose, no explanations.
@@ -460,35 +459,10 @@ def build_ai_signals(message, audio, source_hint):
     return {k: v for k, v in signals.items() if v not in (None, '')}
 
 
-def _openrouter_post(signals):
-    headers = {
-        'Authorization': f'Bearer {OPENROUTER_API_KEY}',
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://github.com/telegram-music-sync',
-        'X-Title': 'Telegram Music Sync',
-    }
-    payload = {
-        'model': OPENROUTER_MODEL,
-        'messages': [
-            {'role': 'system', 'content': AI_SYSTEM_PROMPT},
-            {'role': 'user', 'content': json.dumps(signals, ensure_ascii=False)},
-        ],
-        'temperature': 0.2,
-        'max_tokens': 500,
-    }
-    resp = requests.post(
-        f'{OPENROUTER_BASE}/chat/completions',
-        headers=headers,
-        json=payload,
-        timeout=AI_TIMEOUT,
-    )
-    return resp
-
-
 def parse_ai_response(raw):
     text = (raw or '').strip()
     if not text:
-        raise ValueError('empty AI response')
+        raise AIError('empty', 'AI returned empty content')
 
     if text.startswith('```'):
         text = re.sub(r'^```(?:json)?\s*', '', text)
@@ -510,7 +484,7 @@ def parse_ai_response(raw):
         except json.JSONDecodeError:
             pass
 
-    raise ValueError(f'could not parse JSON from AI response: {text[:300]!r}')
+    raise AIError('parse', f'Could not parse JSON from response: {text[:200]!r}')
 
 
 def sanitize_year(value):
@@ -525,86 +499,62 @@ def sanitize_year(value):
 
 
 def call_ai(signals):
-    """Call OpenRouter with retries and exponential backoff. Raises on total failure."""
-    if not OPENROUTER_API_KEY:
-        raise RuntimeError('OPENROUTER_API_KEY is not set')
+    """Single-shot call to Groq. Raises AIError on any failure."""
+    if not GROQ_API_KEY:
+        raise AIError('auth', 'GROQ_API_KEY is not set')
 
-    last_error = None
-    delay = AI_BACKOFF_BASE
+    headers = {
+        'Authorization': f'Bearer {GROQ_API_KEY}',
+        'Content-Type': 'application/json',
+    }
+    payload = {
+        'model': GROQ_TEXT_MODEL,
+        'messages': [
+            {'role': 'system', 'content': AI_SYSTEM_PROMPT},
+            {'role': 'user', 'content': json.dumps(signals, ensure_ascii=False)},
+        ],
+        'temperature': 0.2,
+        'max_tokens': 500,
+    }
 
-    for attempt in range(1, AI_MAX_RETRIES + 1):
-        try:
-            log(f'AI attempt {attempt}/{AI_MAX_RETRIES} (timeout={AI_TIMEOUT}s)...')
-            resp = _openrouter_post(signals)
+    try:
+        resp = requests.post(
+            f'{GROQ_BASE}/chat/completions',
+            headers=headers,
+            json=payload,
+            timeout=AI_TIMEOUT,
+        )
+    except requests.Timeout as exc:
+        raise AIError('timeout', f'Request exceeded {AI_TIMEOUT}s: {exc}')
+    except requests.ConnectionError as exc:
+        raise AIError('network', f'Connection error: {exc}')
+    except requests.RequestException as exc:
+        raise AIError('network', f'Request error: {exc}')
 
-            if resp.status_code == 429:
-                retry_after = resp.headers.get('Retry-After')
-                try:
-                    wait = int(retry_after) if retry_after else delay
-                except ValueError:
-                    wait = delay
-                last_error = f'HTTP 429 rate-limited (retry-after={retry_after})'
-                log(f'AI rate-limited; sleeping {wait}s before retry')
-                time.sleep(max(1, min(wait, AI_BACKOFF_CAP)))
-                delay = min(delay * 2, AI_BACKOFF_CAP)
-                continue
+    status = resp.status_code
 
-            if resp.status_code in (401, 403):
-                raise RuntimeError(
-                    f'OpenRouter auth failed (HTTP {resp.status_code}): {resp.text[:200]}'
-                )
+    if status in (401, 403):
+        raise AIError('auth', f'HTTP {status}: {resp.text[:200]}')
+    if status == 429:
+        raise AIError('rate_limit', f'HTTP 429: {resp.text[:200]}')
+    if 500 <= status < 600:
+        raise AIError('server', f'HTTP {status}: {resp.text[:200]}')
+    if 400 <= status < 500:
+        raise AIError('request', f'HTTP {status}: {resp.text[:200]}')
+    if status != 200:
+        raise AIError('unknown', f'Unexpected HTTP {status}: {resp.text[:200]}')
 
-            if resp.status_code >= 500:
-                last_error = f'HTTP {resp.status_code}: {resp.text[:200]}'
-                log(f'AI server error: {last_error}')
-                time.sleep(delay)
-                delay = min(delay * 2, AI_BACKOFF_CAP)
-                continue
+    try:
+        body = resp.json()
+    except ValueError:
+        raise AIError('parse', f'Non-JSON HTTP body: {resp.text[:200]!r}')
 
-            if resp.status_code != 200:
-                last_error = f'HTTP {resp.status_code}: {resp.text[:200]}'
-                log(f'AI unexpected status: {last_error}')
-                time.sleep(delay)
-                delay = min(delay * 2, AI_BACKOFF_CAP)
-                continue
+    choices = body.get('choices') or []
+    if not choices:
+        raise AIError('empty', f'No choices in response: {str(body)[:200]}')
 
-            try:
-                payload = resp.json()
-            except ValueError:
-                last_error = 'AI returned non-JSON HTTP body'
-                log(last_error)
-                time.sleep(delay)
-                delay = min(delay * 2, AI_BACKOFF_CAP)
-                continue
-
-            choices = payload.get('choices') or []
-            if not choices:
-                last_error = f'AI returned no choices: {str(payload)[:200]}'
-                log(last_error)
-                time.sleep(delay)
-                delay = min(delay * 2, AI_BACKOFF_CAP)
-                continue
-
-            content = (choices[0].get('message') or {}).get('content') or ''
-            try:
-                data = parse_ai_response(content)
-                log(f'AI success on attempt {attempt}')
-                return data
-            except ValueError as exc:
-                last_error = f'parse error: {exc}'
-                log(f'AI parse failure on attempt {attempt}: {exc}')
-                time.sleep(delay)
-                delay = min(delay * 2, AI_BACKOFF_CAP)
-                continue
-
-        except (requests.Timeout, requests.ConnectionError) as exc:
-            last_error = f'{type(exc).__name__}: {exc}'
-            log(f'AI network error on attempt {attempt}: {last_error}')
-            time.sleep(delay)
-            delay = min(delay * 2, AI_BACKOFF_CAP)
-            continue
-
-    raise RuntimeError(f'AI failed after {AI_MAX_RETRIES} attempts. Last error: {last_error}')
+    content = (choices[0].get('message') or {}).get('content') or ''
+    return parse_ai_response(content)
 
 
 # ---------------------------------------------------------------- pipeline
@@ -670,7 +620,7 @@ def import_update(item, state, manifest):
     except Exception as exc:
         log_err(f'Download failed for file_id={file_id}: {exc}')
         raw_path.unlink(missing_ok=True)
-        send_reply(chat_id, message_id, f'❌ Download failed: {str(exc)[:200]}')
+        send_reply(chat_id, message_id, f'❌ Download failed\n\nDetails: {str(exc)[:300]}')
         return False
 
     content_hash = sha256_of(raw_path)
@@ -681,15 +631,20 @@ def import_update(item, state, manifest):
             remember_file_id(state, file_unique_id)
         return False
 
-    # -- AI metadata extraction -----------------------------------------
+    # -- AI metadata extraction (single attempt) -------------------------
+    time.sleep(RATE_LIMIT_DELAY)  # keep under 30 RPM
     try:
         signals = build_ai_signals(message, audio, source_hint)
         ai_data = call_ai(signals)
+    except AIError as exc:
+        raw_path.unlink(missing_ok=True)
+        log_err(f'AI failed for file_id={file_id}: [{exc.category}] {exc.detail}')
+        reply_failure(chat_id, message_id, exc)
+        return False
     except Exception as exc:
         raw_path.unlink(missing_ok=True)
-        log_err(f'AI failed for file_id={file_id}: {exc}')
+        log_err(f'Unexpected AI error for file_id={file_id}: {exc}')
         reply_failure(chat_id, message_id, exc)
-        # Do NOT remember file_unique_id: user may resend.
         return False
 
     ai_title = str(ai_data.get('title') or '').strip()
@@ -725,7 +680,7 @@ def import_update(item, state, manifest):
         log_err(f'Conversion error for {raw_path.name}: {exc}')
         raw_path.unlink(missing_ok=True)
         final_path.unlink(missing_ok=True)
-        send_reply(chat_id, message_id, f'❌ Conversion error: {str(exc)[:200]}')
+        send_reply(chat_id, message_id, f'❌ Conversion error\n\nDetails: {str(exc)[:300]}')
         return False
 
     if raw_path.exists() and raw_path != final_path:
@@ -777,8 +732,8 @@ def handle_updates():
     if not BOT_TOKEN:
         log_err('TELEGRAM_BOT_TOKEN is not set. Aborting.')
         return 0
-    if not OPENROUTER_API_KEY:
-        log_err('OPENROUTER_API_KEY is not set. Aborting.')
+    if not GROQ_API_KEY:
+        log_err('GROQ_API_KEY is not set. Aborting.')
         return 0
 
     delete_webhook()
@@ -788,7 +743,7 @@ def handle_updates():
     log(f'Starting sync: offset={state.get("offset")} '
         f'chat_filter={CHAT_ID or "(any chat)"} '
         f'imported_total={state.get("imported", 0)} '
-        f'ai_model={OPENROUTER_MODEL}')
+        f'ai_model={GROQ_TEXT_MODEL}')
 
     updates = fetch_updates(state.get('offset', 0))
     log(f'Received {len(updates)} update(s) from Telegram.')
@@ -810,7 +765,6 @@ def handle_updates():
         except Exception as exc:
             log_err(f'Unexpected error processing update_id={update_id}: {exc}')
             log(traceback.format_exc())
-            # Advance past this update to avoid blocking the queue forever.
             if update_id >= max_update_id:
                 max_update_id = update_id + 1
 
