@@ -36,7 +36,7 @@ var PRESETS={
 var state={enabled:true,preset:'Flat',bands:[0,0,0,0,0,0,0,0,0,0],preamp:0};
 var custom={};                       /* user presets — sonora-eq-presets */
 var ctx=null,src=null,filters=[],preNode=null,analyserNode=null;
-var audioEl=null,ready=false,open=false,host=null;
+var audioEl=null,ready=false,open=false,host=null,status='';
 var onChange=null;                   /* app.js sets this → saveState() */
 
 function clamp(v,a,b){return v<a?a:(v>b?b:v);}
@@ -51,11 +51,10 @@ function init(el){
   if(ready||!el)return;
   audioEl=el;
   var AC=window.AudioContext||window.webkitAudioContext;
-  if(!AC)return;
+  if(!AC){status='Equalizer is not supported by this browser.';refreshStatus();return;}
   try{
     ctx=new AC();
-    try{src=ctx.createMediaElementSource(el);}catch(e){src=null;}
-    if(!src){ctx=null;return;}        /* already claimed by another ctx */
+    src=ctx.createMediaElementSource(el);
     var node=src;
     for(var i=0;i<FREQS.length;i++){
       var f=ctx.createBiquadFilter();
@@ -76,9 +75,30 @@ function init(el){
     preNode.connect(analyserNode);
     analyserNode.connect(ctx.destination);
     ready=true;
-    if(ctx.state==='suspended'&&ctx.resume)ctx.resume().catch(function(){});
+    status='';
+    resume();
     applyNodes();
-  }catch(e){ready=false;}
+  }catch(e){
+    ready=false;
+    status='Equalizer unavailable; audio will continue without EQ.';
+    if(src){
+      try{src.disconnect();}catch(ignore){}
+      try{src.connect(ctx.destination);}catch(ignore){}
+    }
+    refreshStatus();
+  }
+}
+function resume(){
+  if(ctx&&ctx.state==='suspended'&&ctx.resume){
+    try{return ctx.resume().catch(function(){status='Tap play to enable audio processing.';refreshStatus();});}
+    catch(e){status='Tap play to enable audio processing.';refreshStatus();}
+  }
+  return Promise.resolve();
+}
+function refreshStatus(){
+  if(!host)return;
+  var el=host.querySelector('.eq-status');
+  if(el){el.textContent=status;el.hidden=!status;}
 }
 function applyNodes(){
   if(!ready)return;
@@ -184,6 +204,7 @@ function panelHTML(){
   var h='',i,k,c,on;
   h+='<div class="eq-head"><span class="eq-title">EQUALIZER<span class="eq-sub">10-BAND GRAPHIC</span></span>';
   h+='<button type="button" class="eq-power'+(state.enabled?' on':'')+'" data-eq="enabled" aria-pressed="'+(state.enabled?'true':'false')+'" aria-label="Enable or bypass the equalizer">'+(state.enabled?'ENABLED':'BYPASS')+'</button></div>';
+  h+='<p class="eq-status"'+(status?'':' hidden')+'>'+esc(status)+'</p>';
   h+='<div class="eq-chips" role="group" aria-label="EQ presets">';
   var names=[];
   for(k in PRESETS)names.push(k);
@@ -236,6 +257,7 @@ function refreshUI(){
     pw.setAttribute('aria-pressed',state.enabled?'true':'false');
   }
   host.classList.toggle('eq-off',!state.enabled);
+  refreshStatus();
 }
 /* ---------- mount / open / events ---------- */
 function applyOpen(){
@@ -259,9 +281,6 @@ function mount(container){
   applyOpen();
 }
 function toggle(){
-  var player=document.getElementById('player');
-  var needOpen=player&&!player.classList.contains('open');
-  if(needOpen&&window.openPlayer){try{openPlayer();}catch(e){}}
   var panel=document.getElementById('eqPanel')||host;
   if(!panel)return;
   host=panel;
@@ -300,6 +319,8 @@ window.EQ={
   mount:mount,
   toggle:toggle,
   isOpen:function(){return open;},
+  resume:resume,
+  get status(){return status;},
   get enabled(){return state.enabled;},
   set enabled(v){setEnabled(!!v);},
   get analyser(){return analyserNode;},

@@ -2,7 +2,7 @@
 
 SONORA is a static music player designed for GitHub Pages. It is intentionally minimal, production-ready, and optimized for a dark neon aesthetic.
 
-## What changed
+## What changed:
 
 - Simplified the site to a clean, production-ready listening experience.
 - Removed non-player sections and extra noise from the interface.
