@@ -461,6 +461,7 @@
       audio.load();
       audio.volume = state.volume;
       if (autoplay !== false) {
+        if (window.EQ && window.EQ.resume) window.EQ.resume();
         var playAttempt = audio.play();
         if (playAttempt && playAttempt.catch) playAttempt.catch(function(){ state.play = false; render(); });
         state.play = true;

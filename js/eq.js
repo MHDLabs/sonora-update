@@ -123,11 +123,13 @@ function matchPreset(){
 function setBand(i,gainDb){
   if(i<0||i>9)return;
   state.bands[i]=clamp((+gainDb)||0,MIN_DB,MAX_DB);
+  state.enabled=true;
   state.preset=matchPreset();
   applyNodes();refreshUI();notify();
 }
 function setPreamp(db){
   state.preamp=clamp((+db)||0,PRE_MIN,PRE_MAX);
+  state.enabled=true;
   state.preset=matchPreset();
   applyNodes();refreshUI();notify();
 }
@@ -139,6 +141,7 @@ function setPreset(name){
   if(!bands||bands.length!==10)return;
   for(var i=0;i<10;i++)state.bands[i]=clamp((+bands[i])||0,MIN_DB,MAX_DB);
   state.preamp=clamp(p.bands?(+p.preamp||0):0,PRE_MIN,PRE_MAX);
+  state.enabled=true;
   state.preset=name;
   applyNodes();refreshUI();notify();
 }
@@ -287,6 +290,11 @@ function toggle(){
   open=!open;
   applyOpen();
 }
+function close(){
+  if(!open)return;
+  open=false;
+  applyOpen();
+}
 document.addEventListener('input',function(e){
   var t=e.target;
   if(!t||!t.getAttribute)return;
@@ -318,6 +326,7 @@ window.EQ={
   restore:function(o){restore(o);},
   mount:mount,
   toggle:toggle,
+  close:close,
   isOpen:function(){return open;},
   resume:resume,
   get status(){return status;},
